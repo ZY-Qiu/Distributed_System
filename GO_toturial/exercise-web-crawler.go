@@ -11,67 +11,86 @@ type Fetcher interface {
 	Fetch(url string) (body string, urls []string, err error)
 }
 
-
 // Crawl uses fetcher to recursively crawl
 // pages starting with url, to a maximum of depth.
-func Crawl(url string, depth int, fetcher Fetcher, vis visited, ch chan string, end chan bool) {
+func MutexCrawl(url string, depth int, fetcher Fetcher, vis *visited) {
 	// TODO: Fetch URLs in parallel.
 	// TODO: Don't fetch the same URL twice.
 	// This implementation doesn't do either:
 	if depth <= 0 {
-		end <- true
 		return
 	}
 	vis.mu.Lock()
 	_, ok := vis.v[url]
-	if ok {
-		vis.mu.Unlock()
-		end <- true
-		return
-	}
-	body, urls, err := fetcher.Fetch(url)
 	vis.v[url] = true
 	vis.mu.Unlock()
-
-	if err != nil {
-		fmt.Println(err)
-		end <- true
+	if ok {
 		return
 	}
-	ch <- fmt.Sprintf("found: %s %q\n", url, body)
+	_, urls, err := fetcher.Fetch(url)
+
+	if err != nil {
+		return
+	}
+
+	var done sync.WaitGroup
 	for _, u := range urls {
-		go Crawl(u, depth-1, fetcher, vis, ch, end)
+		done.Add(1)
+		go func(s string) {
+			defer done.Done()
+			MutexCrawl(s, depth-1, fetcher, vis)
+		}(u)
 	}
-	for i := 0; i < len(urls); i++ {
-		<- end	
-	}
-	end <- true
+	done.Wait()
 	return
+}
+
+func ChanCrawlWorker(url string, ch chan []string, fetcher Fetcher) {
+	_, urls, err := fetcher.Fetch(url)
+	if err != nil {
+		ch <- []string{}
+	} else {
+		ch <- urls
+	}
+}
+
+func ChanCrawlMaster(depth int, fetcher Fetcher, ch chan []string) {
+	vis := make(map[string]bool)
+	// master listening on channel, and distributes new work to worker when hearing something
+	n := 1
+	for strlist := range ch {
+		for _, str := range strlist {
+			if v := vis[str]; v == false {
+				vis[str] = true
+				n += 1
+				go ChanCrawlWorker(str, ch, fetcher)
+			}
+		}
+		n -= 1
+		if n == 0 {
+			break
+		}
+	}
 }
 
 func main() {
 	vis := visited{make(map[string]bool), sync.Mutex{}}
 	// need a counter of how many values are pushed into the channel
-	ch1 := make(chan string)
-	ch2 := make(chan bool)
-	go Crawl("https://golang.org/", 4, fetcher, vis, ch1, ch2)
-	for{
-		select {
-		case s := <-ch1:
-			fmt.Printf(s)
-		case <- ch2:
-			return
-		}
-	}
+	MutexCrawl("https://golang.org/", 4, fetcher, &vis)
+	fmt.Printf("*****************\n")
+	ch := make(chan []string)
+	go func() { ch <- []string{"https://golang.org/"} }()
+	ChanCrawlMaster(4, fetcher, ch)
+}
+
+// a map that count whether a url is visited
+type visited struct {
+	v  map[string]bool
+	mu sync.Mutex
 }
 
 // fakeFetcher is Fetcher that returns canned results.
 type fakeFetcher map[string]*fakeResult
-// a map that count whether a url is visited
-type visited struct {
-	v map[string]bool
-	mu sync.Mutex
-}
 
 type fakeResult struct {
 	body string
@@ -80,8 +99,10 @@ type fakeResult struct {
 
 func (f fakeFetcher) Fetch(url string) (string, []string, error) {
 	if res, ok := f[url]; ok {
+		fmt.Printf("found: %s %q\n", url, res.body)
 		return res.body, res.urls, nil
 	}
+	fmt.Printf("not found: %s\n", url)
 	return "", nil, fmt.Errorf("not found: %s", url)
 }
 
