@@ -1,0 +1,9 @@
+Client issues a write to master, 
+master figures out the primary chunk server, and designates the primary if does not exist, along with a lease, and increment the chunk servers' version number
+master responds the client with chunk server locations and chunk handles, 
+client sends data to those chunk servers and sends the write request to the primary chunk server,
+primary then writes the data and other data from other clients in a serial order, and sends this order to the secondary,
+however, one or more chunk servers have an error and not writing, and return to the client from the primary
+it should be the case that the client should repeat the writing process again, but the client dies,
+this leaves some chunk servers holding new data, while some hold stale data but with the latest version number,
+then when new client comes and read the data which was to be written in the leading process, it may read stale data from the chunk servers that had an error before and did not write.
