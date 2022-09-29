@@ -121,6 +121,9 @@ type AppendEntriesReply struct {
 	Term    int
 	Success bool
 	State   PeerState
+	XTerm   int // term of the conflicting term at PrevLogIndex
+	XIndex  int // index of the first entry in XTerm
+	XLen    int // length of the entire log, used if follower has no log entry at all
 }
 
 func (rf *Raft) leaderSend() {
@@ -189,7 +192,27 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		}
 	case PEERMISMATCH:
 		if rf.currentTerm == args.Term {
-			rf.nextIndex[server]--
+			// if XTerm == -1, backup to XLen
+			if reply.XTerm == -1 {
+				rf.nextIndex[server] = reply.XLen + 1
+			} else {
+				// has conflicting term at PrevLogIndex
+				backupIndex := args.PrevLogIndex
+				for i := args.PrevLogIndex - 1; i > 0; i-- {
+					if rf.log[i].Term == reply.XTerm {
+						backupIndex = i + 1 + 1
+						break
+					}
+					if rf.log[i].Term < reply.XTerm {
+						// XIndex is the starting index of the followers' conflicting term
+						backupIndex = reply.XIndex
+						break
+					}
+				}
+				rf.nextIndex[server] = backupIndex
+			}
+			// if leader doesn't have reply.XTerm, backup to XIndex
+			// if leader has XTerm, backup to the last enrty that has the conflicting XTerm
 		}
 	case PEERNORMAL:
 		// now reply.Term has to be equal to curretTerm
@@ -258,6 +281,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// check
 		// args.PrevLogIndex can be 0
 		if args.PrevLogIndex > 0 && (len(rf.log) < args.PrevLogIndex || rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
+			if len(rf.log) >= args.PrevLogIndex {
+				reply.XTerm = rf.log[args.PrevLogIndex-1].Term
+				reply.XIndex = func(term, index int) int {
+					for index > 0 && (rf.log[index-1].Term == term) {
+						index--
+					}
+					return index + 1
+				}(reply.XTerm, args.PrevLogIndex)
+				reply.XLen = len(rf.log)
+			} else {
+				// log entry doesn't exist at PrevLogIndex
+				reply.XTerm = -1
+				reply.XIndex = -1
+				reply.XLen = len(rf.log)
+			}
 			reply.Success = false
 			reply.State = PEERMISMATCH
 		} else {
