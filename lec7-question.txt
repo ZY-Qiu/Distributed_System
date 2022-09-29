@@ -1,0 +1,2 @@
+No, it could not.
+Thing is, the word executed means the raft server has applied the entries in its log up to the commitIndex. However, the follower must not commit its log until the received leaders commitIndex is ahead of itself's and update its own commitIndex. So before the leader sends it installSnapshot or appendEntries, the follower cannot commit anything ahead in its own log.
