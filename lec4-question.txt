@@ -1,0 +1,3 @@
+No. 
+Without network partition, before the backup goes live, it will first run an atomic test-and-set operation on the shared network disk. Only one of this operations will return true, and grant the permission to go live.
+When there is network partition, it applies a majority vote, which means one backup only goes live if it receives true from the majority of all the disk servers.

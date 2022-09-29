@@ -1,0 +1,28 @@
+package main
+
+import "sync"
+
+var a string
+var done bool
+
+func setup(mu sync.Mutex, cond *sync.Cond) {
+	mu.Lock()
+	a = "hello, world\n"
+	done = true
+	cond.Broadcast()
+	mu.Unlock()
+}
+
+func main() {
+	mu := sync.Mutex{}
+	cond := sync.NewCond(&mu)
+	go setup(mu, cond)
+	mu.Lock()
+	for !done {
+		cond.Wait()
+	}
+	print(a)
+	mu.Unlock()
+}
+
+The origin code let the main thread spining for a while until done, not good. The new code lets the main thread to wait on the condition until be woken up.

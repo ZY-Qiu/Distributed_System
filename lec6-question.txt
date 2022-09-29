@@ -1,0 +1,4 @@
+If first server as a leader crashes:
+For (a), it could not be elected. Raft prevents vote to be granted to candidatas that have smaller log index.
+For (d), it could be elected. All servers could vote for it.
+For (f), it could not be elected. Raft prevents vote to be granted to candidatas that have smaller log term.
