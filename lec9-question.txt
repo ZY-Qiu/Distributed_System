@@ -1,0 +1,1 @@
+This can cause the node to reply to a read without the already commited written data known to the client. Then the client may see a strict timeline of writing done some value and commited, but later a read will return another value and no writes occured from any client within this period. That violates linearizability.

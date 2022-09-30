@@ -1,0 +1,4 @@
+To acquire a lock, a client will try to create a znode, if success, it acquires the lock, otherwise it can watch the znode until the znode dies, then it acquires the lock.
+To avoid multiple clients holding the same lock, we shouldn't allow the clients to watch the same znode. So first all clients acquiring the lock should create a znode in a particular position; second, get the list of znodes in this position; third, if itself is the lowest znode in the list, hold the lock and leave the locking; four, else it will watch on the znode of others just before itself's znode, on whether it exists; then repeat second if the one before did get deleted. 
+This mechanism works because every client only watch on one other client's lock/znode, and get notified when that client's lock is released and itself can acquire the lock. 
+The znode is created in this locking process with EPHEMERAL flag, which will cause the its lock requests or any lock held already to be cleanup.
