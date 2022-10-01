@@ -1,0 +1,1 @@
+Frangipani uses a version number on all the modified block and log entry to prevent it. When it sees the version of a block which is going to be redone by a log larger then the version number of the log, it should not replay this log.

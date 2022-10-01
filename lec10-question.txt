@@ -1,0 +1,1 @@
+The runtime state includes the redo log stream, the point of consistency and durability, and the storage servers that acknowledge it (write quorum).
