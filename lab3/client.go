@@ -11,7 +11,7 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 	LeaderId   int   // choose which server is the leader to send request to
-	SequenceId int64 // used to tag its request in monotonicly increasing order
+	SequenceId int   // used to tag its request in monotonicly increasing order
 	ClientId   int64 // used to identify itself to the server to check its sequenceId
 }
 
@@ -67,10 +67,11 @@ func (ck *Clerk) Get(key string) string {
 				value := reply.Value
 				return value
 			} else if reply.Err == ErrNoKey {
+				DPrintf("Client's Get error: NoKey\n")
 				ck.LeaderId = serverId
 				return ""
 			} else if reply.Err == ErrWrongLeader {
-				DPrintf("Client's Get going to wrrong leader, retry\n")
+				//DPrintf("Client's Get going to wrrong leader, retry\n")
 				serverId = (serverId + 1) % len(ck.servers)
 				continue
 			}
@@ -112,11 +113,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			if reply.Err == OK {
 				ck.LeaderId = serverId
 				return
-			} else if reply.Err == ErrNoKey {
-				ck.LeaderId = serverId
-				return
 			} else if reply.Err == ErrWrongLeader {
-				DPrintf("Client's PutAppend going to wrrong leader, retry\n")
+				//DPrintf("Client's PutAppend going to wrrong leader, retry\n")
 				serverId = (serverId + 1) % len(ck.servers)
 				continue
 			}

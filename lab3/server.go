@@ -11,7 +11,7 @@ import (
 	"../raft"
 )
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -34,7 +34,7 @@ type Op struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	OpType     string
-	SequenceId int64
+	SequenceId int
 	ClientId   int64
 	OpKey      string
 	OpValue    string
@@ -52,20 +52,10 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	seqMap    map[int64]int64   // map a client to its sequenceId, to deal with duplicate
+	seqMap    map[int64]int     // map a client to its sequenceId, to deal with duplicate
 	KvStorage map[string]string // store the key/value from the client
 	// probably a channel to get the message from the listener which listen on the raft's channel
 	chMap map[int]chan Op
-}
-
-func (kv *KVServer) isDup(clientId, sequenceId int64) bool {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	sid, ok := kv.seqMap[clientId]
-	if !ok {
-		return false
-	}
-	return sequenceId <= sid
 }
 
 func (kv *KVServer) getChannel(index int) chan Op {
@@ -73,7 +63,8 @@ func (kv *KVServer) getChannel(index int) chan Op {
 	defer kv.mu.Unlock()
 	ch, ok := kv.chMap[index]
 	if !ok {
-		kv.chMap[index] = make(chan Op)
+		// buffered channel, inorder to help in performance from asynchronous
+		kv.chMap[index] = make(chan Op, 1)
 		ch = kv.chMap[index]
 	}
 	return ch
@@ -82,9 +73,14 @@ func (kv *KVServer) getChannel(index int) chan Op {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	if kv.killed() {
+		reply.Err = ErrWrongLeader
 		return
 	}
-	var isLeader bool
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
 	op := Op{
 		OpType:     GET,
 		SequenceId: args.SequenceId,
@@ -93,38 +89,42 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	//DPrintf("Server's Get calls raft.Start()\n")
 	op.Index, op.Term, isLeader = kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
+
 	// the server will listen to a channel correspond to this index for a reply from the raft to the listener, then itself
 	// the client is allowed to receive data after itself's concurrent operation, subject to linearizablity
 	ch := kv.getChannel(op.Index)
-	// should delete this entry in the chMap after get the data from this channel
-	defer func(index int) {
-		kv.mu.Lock()
-		delete(kv.chMap, index)
-		kv.mu.Unlock()
-	}(op.Index)
+	// should we delete this entry in the chMap after get the data from this channel?
+	// defer func(index int) {
+	// 	kv.mu.Lock()
+	// 	delete(kv.chMap, index)
+	// 	kv.mu.Unlock()
+	// }(op.Index)
 	// it will wait for some time then give up
-	timer := time.NewTicker(200 * time.Millisecond)
+	timer := time.NewTicker(100 * time.Millisecond)
 	defer timer.Stop()
 
 	DPrintf("Get waiting for reply from listener")
 	select {
 	case newOp := <-ch:
-		DPrintf("Get <- index chan")
+		DPrintf("Get <- index channel")
 		// able to reply to client
-		if newOp.Term != op.Term {
+		if newOp.ClientId != op.ClientId || newOp.SequenceId != op.SequenceId {
+			DPrintf("Server's raft switched leader during PutAppend\n")
 			reply.Err = ErrWrongLeader
 			return
 		} else {
-			reply.Err = OK
 			kv.mu.Lock()
-			reply.Value = kv.KvStorage[args.Key]
+			Value, ok := kv.KvStorage[args.Key]
 			kv.mu.Unlock()
+			if ok {
+				reply.Value = Value
+				reply.Err = OK
+			} else {
+				reply.Err = ErrNoKey
+			}
 		}
 	case <-timer.C:
+		DPrintf("Server's Get timeout\n")
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -133,9 +133,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	if kv.killed() {
+		reply.Err = ErrWrongLeader
 		return
 	}
-	var isLeader bool
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
 	op := Op{
 		OpType:     args.Op,
 		SequenceId: args.SequenceId,
@@ -145,34 +150,33 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	//DPrintf("Server's PutAppend calls raft.Start()\n")
 	op.Index, op.Term, isLeader = kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
 	// the server will listen to a channel correspond to this index for a reply from the raft to the listener, then itself
 	ch := kv.getChannel(op.Index)
-	// should delete this entry in the chMap after get the data from this channel
-	defer func(index int) {
-		kv.mu.Lock()
-		delete(kv.chMap, index)
-		kv.mu.Unlock()
-	}(op.Index)
+	// should we delete this entry in the chMap after get the data from this channel?
+	// defer func(index int) {
+	// 	kv.mu.Lock()
+	// 	delete(kv.chMap, index)
+	// 	kv.mu.Unlock()
+	// }(op.Index)
 	// it will wait for some time then give up
-	timer := time.NewTicker(200 * time.Millisecond)
+	timer := time.NewTicker(100 * time.Millisecond)
 	defer timer.Stop()
 
 	DPrintf("Put/Append waiting for reply from listener")
 	select {
 	case newOp := <-ch:
-		DPrintf("Put/Append <- index chan")
+		DPrintf("Put/Append <- index channel")
 		// able to reply to client
-		if newOp.Term != op.Term {
+		if newOp.ClientId != op.ClientId || newOp.SequenceId != op.SequenceId {
+			// the log entry of the same index in the raft's log is overwritten by other leader's log
+			DPrintf("Server's raft switched leader during PutAppend\n")
 			reply.Err = ErrWrongLeader
 			return
 		} else {
 			reply.Err = OK
 		}
 	case <-timer.C:
+		DPrintf("Server's PutAppend timeout\n")
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -223,7 +227,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-	kv.seqMap = make(map[int64]int64)
+	kv.seqMap = make(map[int64]int)
 	kv.KvStorage = make(map[string]string)
 	kv.chMap = make(map[int]chan Op)
 
@@ -238,30 +242,40 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	return kv
 }
 
+func (kv *KVServer) isDup(clientId int64, sequenceId int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	sid, ok := kv.seqMap[clientId]
+	if !ok {
+		return false
+	}
+	return sequenceId <= sid
+}
+
 func (kv *KVServer) Listen() {
 	// listen for the chan, upon receiving something, apply that command to its state machine by calling Get()/PutAppend()
 	for !kv.killed() {
-		cmd := <-kv.applyCh // is blocking, so be fast but also serial
-		DPrintf("Listener <- Raft channel\n")
-		// send the processed data to the main waiting thread that just sent out it command to the raft and waiting
-		index := cmd.CommandIndex
-		op := cmd.Command.(Op)
-		if !kv.isDup(op.ClientId, op.SequenceId) {
-			// read or write to the kvserver's storage
-			kv.mu.Lock()
-			if op.OpType == GET {
-				// the apply of the raft means we have a read quruom
+		select {
+		case cmd := <-kv.applyCh: // is blocking, so be fast but also serial
+			DPrintf("Listener <- Raft channel\n")
+			// send the processed data to the main waiting thread that just sent out it command to the raft and waiting
+			index := cmd.CommandIndex
+			op := cmd.Command.(Op)
+			if !kv.isDup(op.ClientId, op.SequenceId) {
+				// read or write to the kvserver's storage
+				kv.mu.Lock()
+				if op.OpType == GET {
+					// the apply of the raft means we have a read quruom
+				} else if op.OpType == PUT {
+					kv.KvStorage[op.OpKey] = op.OpValue
+				} else if op.OpType == APPEND {
+					kv.KvStorage[op.OpKey] += op.OpValue
+				}
+				kv.seqMap[op.ClientId] = op.SequenceId
+				kv.mu.Unlock()
 			}
-			if op.OpType == PUT {
-				kv.KvStorage[op.OpKey] = op.OpValue
-			}
-			if op.OpType == APPEND {
-				kv.KvStorage[op.OpKey] += op.OpValue
-			}
-			kv.seqMap[op.ClientId] = op.SequenceId
-			kv.mu.Unlock()
+			kv.getChannel(index) <- op
+			DPrintf("Listener -> index channel\n")
 		}
-		kv.getChannel(index) <- op
-		DPrintf("Listener -> index channel\n")
 	}
 }

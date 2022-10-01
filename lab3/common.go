@@ -17,7 +17,7 @@ type PutAppendArgs struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	// must have method to deal with duplicate calls
-	SequenceId int64
+	SequenceId int
 	ClientId   int64
 }
 
@@ -29,7 +29,7 @@ type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
 	// must have method to deal with duplicate calls
-	SequenceId int64
+	SequenceId int
 	ClientId   int64
 }
 

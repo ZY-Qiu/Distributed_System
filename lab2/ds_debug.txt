@@ -1,0 +1,4 @@
+First leader and one follower is partitioned from all others.
+In term 1, 50 log entries is sent to the partitioned leader and follower.
+Later in term 3, another 50 entries is sent to the majority that left.
+Then the leader of the majority is partitioned, and the previous two rejoin.
