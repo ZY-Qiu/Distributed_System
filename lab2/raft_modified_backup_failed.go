@@ -24,8 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
+	"6.824/labgob"
+	"6.824/labrpc"
 )
 
 // import "bytes"
@@ -208,10 +208,10 @@ func (rf *Raft) committer() {
 			rf.lastApplied++
 			Messages = append(Messages, apply)
 		}
-		rf.mu.Unlock()
 		for _, msg := range Messages {
 			rf.applyCh <- msg
 		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -311,9 +311,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if rf.nextIndex[server] > rf.GetLastIndex()+1 {
 			return ok
 		}
-		rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
-		rf.nextIndex[server] = rf.matchIndex[server] + 1
-		DPrintf("Leader %d set nextIndex of server %d to %d/%d in term %d\n", rf.me, server, rf.nextIndex[server], rf.GetLastIndex(), rf.currentTerm)
+		if rf.matchIndex[server] < args.PrevLogIndex+len(args.Entries) {
+			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
+			rf.nextIndex[server] = rf.matchIndex[server] + 1
+			DPrintf("Leader %d set nextIndex of server %d to %d/%d in term %d\n", rf.me, server, rf.nextIndex[server], rf.GetLastIndex(), rf.currentTerm)
+		}
 
 		//DPrintf("Server %d hears reply from %d, sum=%d in term %d.\n", rf.me, server, *sum, rf.currentTerm)
 		if *sum >= (len(rf.peers)/2)+1 {
@@ -371,27 +373,48 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// check
 	// args.PrevLogIndex can be smaller than lastIncludedIndex
 	if args.PrevLogIndex < rf.lastIncludedIndex {
+		// log entry doesn't exist at PrevLogIndex
+		// need a new snapshot
 		reply.Success = false
-		reply.State = PEERUPDATE
+		reply.State = PEERMISMATCH
+		reply.XTerm = -1
+		reply.XLast = 0
 		return
 	}
 	// it shouoldn't be the case that the snapshot is uncommitted, causing rf.lastIncludedTerm != args.PrevLogTerm
 
-	if args.PrevLogIndex > 0 && (rf.GetLastIndex() < args.PrevLogIndex || rf.GetTerm(args.PrevLogIndex) != args.PrevLogTerm) {
-		if rf.GetLastIndex() >= args.PrevLogIndex {
-			reply.XTerm = rf.GetTerm(args.PrevLogIndex)
-			reply.XIndex = func(term, index int) int {
-				for index >= rf.lastIncludedIndex && (rf.GetTerm(index) == term) {
-					index--
-				}
-				return index + 1
-			}(reply.XTerm, args.PrevLogIndex)
-			reply.XLast = rf.GetLastIndex()
-		} else {
-			// log entry doesn't exist at PrevLogIndex
-			reply.XTerm = -1
-			reply.XIndex = -1
-			reply.XLast = rf.GetLastIndex()
+	if args.PrevLogIndex == rf.lastIncludedIndex && rf.GetTerm(args.PrevLogIndex) != args.PrevLogTerm {
+		// unmatched, resend snapshot
+		reply.Success = false
+		reply.State = PEERMISMATCH
+		reply.XTerm = -1
+		reply.XLast = 0
+		return
+	}
+	if rf.GetLastIndex() < args.PrevLogIndex {
+		// log entry doesn't exist at PrevLogIndex
+		reply.XTerm = -1
+		reply.XIndex = -1
+		reply.XLast = rf.GetLastIndex()
+		reply.Success = false
+		reply.State = PEERMISMATCH
+		return
+	}
+
+	if args.PrevLogIndex > 0 && rf.GetTerm(args.PrevLogIndex) != args.PrevLogTerm {
+		reply.XTerm = rf.GetTerm(args.PrevLogIndex)
+		for index := args.PrevLogIndex; index >= rf.lastIncludedIndex; index-- {
+			if rf.GetTerm(index) != reply.XTerm {
+				reply.XIndex = index + 1
+				reply.XLast = rf.GetLastIndex()
+				break
+			}
+			if index == rf.lastIncludedIndex {
+				// all not match, resend the snapshot
+				reply.XTerm = -1
+				reply.XLast = 0
+				break
+			}
 		}
 		reply.Success = false
 		reply.State = PEERMISMATCH

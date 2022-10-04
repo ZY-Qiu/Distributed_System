@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"math/big"
 
-	"../labrpc"
+	"6.824/labrpc"
 )
 
 type Clerk struct {
@@ -55,7 +55,7 @@ func (ck *Clerk) Get(key string) string {
 		ClientId:   ck.ClientId,
 	}
 	// client may sit in a loop continuously retry to get a reply
-	DPrintf("Client calling Get\n")
+	//DPrintf("Client calling Get\n")
 	serverId := ck.LeaderId
 	for {
 		reply := GetReply{}
@@ -67,7 +67,7 @@ func (ck *Clerk) Get(key string) string {
 				value := reply.Value
 				return value
 			} else if reply.Err == ErrNoKey {
-				DPrintf("Client's Get error: NoKey\n")
+				//DPrintf("Client's Get error: NoKey\n")
 				ck.LeaderId = serverId
 				return ""
 			} else if reply.Err == ErrWrongLeader {
@@ -103,7 +103,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ClientId:   ck.ClientId,
 	}
 	// client may sit in a loop continuously retry to get a reply
-	DPrintf("Client calling PutAppend\n")
+	//DPrintf("Client calling PutAppend\n")
 	serverId := ck.LeaderId
 	for {
 		reply := PutAppendReply{}

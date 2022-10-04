@@ -1,17 +1,18 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
-	"../raft"
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -56,6 +57,8 @@ type KVServer struct {
 	KvStorage map[string]string // store the key/value from the client
 	// probably a channel to get the message from the listener which listen on the raft's channel
 	chMap map[int]chan Op
+	// snapshot
+	commitIndex int
 }
 
 func (kv *KVServer) getChannel(index int) chan Op {
@@ -94,22 +97,22 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// the client is allowed to receive data after itself's concurrent operation, subject to linearizablity
 	ch := kv.getChannel(op.Index)
 	// should we delete this entry in the chMap after get the data from this channel?
-	// defer func(index int) {
-	// 	kv.mu.Lock()
-	// 	delete(kv.chMap, index)
-	// 	kv.mu.Unlock()
-	// }(op.Index)
+	defer func(index int) {
+		kv.mu.Lock()
+		delete(kv.chMap, index)
+		kv.mu.Unlock()
+	}(op.Index)
 	// it will wait for some time then give up
 	timer := time.NewTicker(100 * time.Millisecond)
 	defer timer.Stop()
 
-	DPrintf("Get waiting for reply from listener")
+	//DPrintf("Get waiting for reply from listener")
 	select {
 	case newOp := <-ch:
-		DPrintf("Get <- index channel")
+		//DPrintf("Get <- index channel")
 		// able to reply to client
 		if newOp.ClientId != op.ClientId || newOp.SequenceId != op.SequenceId {
-			DPrintf("Server's raft switched leader during PutAppend\n")
+			//DPrintf("Server's raft switched leader during PutAppend\n")
 			reply.Err = ErrWrongLeader
 			return
 		} else {
@@ -124,7 +127,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			}
 		}
 	case <-timer.C:
-		DPrintf("Server's Get timeout\n")
+		//DPrintf("Server's Get timeout\n")
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -153,30 +156,30 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// the server will listen to a channel correspond to this index for a reply from the raft to the listener, then itself
 	ch := kv.getChannel(op.Index)
 	// should we delete this entry in the chMap after get the data from this channel?
-	// defer func(index int) {
-	// 	kv.mu.Lock()
-	// 	delete(kv.chMap, index)
-	// 	kv.mu.Unlock()
-	// }(op.Index)
+	defer func(index int) {
+		kv.mu.Lock()
+		delete(kv.chMap, index)
+		kv.mu.Unlock()
+	}(op.Index)
 	// it will wait for some time then give up
 	timer := time.NewTicker(100 * time.Millisecond)
 	defer timer.Stop()
 
-	DPrintf("Put/Append waiting for reply from listener")
+	//DPrintf("Put/Append waiting for reply from listener")
 	select {
 	case newOp := <-ch:
-		DPrintf("Put/Append <- index channel")
+		//DPrintf("Put/Append <- index channel")
 		// able to reply to client
 		if newOp.ClientId != op.ClientId || newOp.SequenceId != op.SequenceId {
 			// the log entry of the same index in the raft's log is overwritten by other leader's log
-			DPrintf("Server's raft switched leader during PutAppend\n")
+			//DPrintf("Server's raft switched leader during PutAppend\n")
 			reply.Err = ErrWrongLeader
 			return
 		} else {
 			reply.Err = OK
 		}
 	case <-timer.C:
-		DPrintf("Server's PutAppend timeout\n")
+		//DPrintf("Server's PutAppend timeout\n")
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -230,12 +233,15 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.seqMap = make(map[int64]int)
 	kv.KvStorage = make(map[string]string)
 	kv.chMap = make(map[int]chan Op)
-
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.commitIndex = -1
+	snapshot := persister.ReadSnapshot()
+	if snapshot != nil || len(snapshot) > 0 {
+		kv.DecodeSnapshot(snapshot)
+	}
 	// run a background thread that check for the chan of the commit message
 	go kv.Listen()
 
@@ -243,8 +249,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 }
 
 func (kv *KVServer) isDup(clientId int64, sequenceId int) bool {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	sid, ok := kv.seqMap[clientId]
 	if !ok {
 		return false
@@ -257,25 +261,73 @@ func (kv *KVServer) Listen() {
 	for !kv.killed() {
 		select {
 		case cmd := <-kv.applyCh: // is blocking, so be fast but also serial
-			DPrintf("Listener <- Raft channel\n")
+			//DPrintf("Listener <- Raft channel\n")
 			// send the processed data to the main waiting thread that just sent out it command to the raft and waiting
-			index := cmd.CommandIndex
-			op := cmd.Command.(Op)
-			if !kv.isDup(op.ClientId, op.SequenceId) {
-				// read or write to the kvserver's storage
+			if cmd.SnapshotValid {
+				// is a snapshot, should install the snapshot because the server is lagged behind
 				kv.mu.Lock()
-				if op.OpType == GET {
-					// the apply of the raft means we have a read quruom
-				} else if op.OpType == PUT {
-					kv.KvStorage[op.OpKey] = op.OpValue
-				} else if op.OpType == APPEND {
-					kv.KvStorage[op.OpKey] += op.OpValue
+				if kv.commitIndex < cmd.SnapshotIndex {
+					kv.DecodeSnapshot(cmd.Snapshot)
+					kv.commitIndex = cmd.SnapshotIndex
 				}
-				kv.seqMap[op.ClientId] = op.SequenceId
 				kv.mu.Unlock()
 			}
-			kv.getChannel(index) <- op
-			DPrintf("Listener -> index channel\n")
+			if cmd.CommandValid {
+				// after installing snapshot, command first time seen, but outdated
+				index := cmd.CommandIndex
+				op := cmd.Command.(Op)
+				kv.mu.Lock()
+				if cmd.CommandIndex <= kv.commitIndex {
+					// it may be an error? terminate?
+					continue
+				}
+				if !kv.isDup(op.ClientId, op.SequenceId) {
+					// read or write to the kvserver's storage
+					if op.OpType == GET {
+						// the apply of the raft means we have a read quruom
+					} else if op.OpType == PUT {
+						kv.KvStorage[op.OpKey] = op.OpValue
+					} else if op.OpType == APPEND {
+						kv.KvStorage[op.OpKey] += op.OpValue
+					}
+					kv.seqMap[op.ClientId] = op.SequenceId
+					// may need to snapshot if log size too large
+				}
+				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() > kv.maxraftstate {
+					snapshot := kv.MakeSnapshot()
+					kv.rf.Snapshot(cmd.CommandIndex, snapshot)
+				}
+				kv.commitIndex = cmd.CommandIndex
+				kv.mu.Unlock()
+				kv.getChannel(index) <- op
+				//DPrintf("Listener -> index channel\n")
+			}
 		}
 	}
+}
+func (kv *KVServer) DecodeSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	// snapshot stores the kvStorage, seqMap
+	var kvStorage map[string]string
+	var seqMap map[int64]int
+	if d.Decode(&kvStorage) != nil ||
+		d.Decode(&seqMap) != nil {
+		DPrintf("KVServer %d read broken persistence after reboot\n", kv.me)
+		return
+	} else {
+		kv.KvStorage = kvStorage
+		kv.seqMap = seqMap
+	}
+}
+func (kv *KVServer) MakeSnapshot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.KvStorage)
+	e.Encode(kv.seqMap)
+	data := w.Bytes()
+	return data
 }

@@ -24,8 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
+	"6.824/labgob"
+	"6.824/labrpc"
 )
 
 // import "bytes"
@@ -115,6 +115,7 @@ type Raft struct {
 	applyCh         chan ApplyMsg
 	timer           *time.Timer
 	startTime       time.Time
+	cond            *sync.Cond
 	// Volatile on leader, Reinitialized after election
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server
@@ -191,12 +192,13 @@ func (rf *Raft) leaderSend(isHB bool) {
 
 func (rf *Raft) committer() {
 	for !rf.killed() {
-		time.Sleep(time.Millisecond * 20)
 		rf.mu.Lock()
+		rf.cond.Wait()
+		//DPrintf("Server %d's committer woken up\n", rf.me)
 		if rf.lastApplied < rf.commmitIndex {
 			DPrintf("Server %d commits log index %d-%d in term %d\n", rf.me, rf.lastApplied+1, rf.commmitIndex, rf.currentTerm)
 		}
-		Messages := make([]ApplyMsg, 0)
+		massages := make([]ApplyMsg, 0)
 		for rf.lastApplied < rf.commmitIndex {
 			//DPrintf("Server %d commiting log index %d\n", rf.me, rf.lastApplied+1)
 			apply := ApplyMsg{
@@ -206,10 +208,10 @@ func (rf *Raft) committer() {
 				SnapshotValid: false,
 			}
 			rf.lastApplied++
-			Messages = append(Messages, apply)
+			massages = append(massages, apply)
 		}
 		rf.mu.Unlock()
-		for _, msg := range Messages {
+		for _, msg := range massages {
 			rf.applyCh <- msg
 		}
 	}
@@ -311,9 +313,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if rf.nextIndex[server] > rf.GetLastIndex()+1 {
 			return ok
 		}
-		rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
-		rf.nextIndex[server] = rf.matchIndex[server] + 1
-		DPrintf("Leader %d set nextIndex of server %d to %d/%d in term %d\n", rf.me, server, rf.nextIndex[server], rf.GetLastIndex(), rf.currentTerm)
+		if rf.matchIndex[server] < args.PrevLogIndex+len(args.Entries) {
+			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
+			rf.nextIndex[server] = rf.matchIndex[server] + 1
+			DPrintf("Leader %d set nextIndex of server %d to %d/%d in term %d\n", rf.me, server, rf.nextIndex[server], rf.GetLastIndex(), rf.currentTerm)
+		}
 
 		//DPrintf("Server %d hears reply from %d, sum=%d in term %d.\n", rf.me, server, *sum, rf.currentTerm)
 		if *sum >= (len(rf.peers)/2)+1 {
@@ -326,7 +330,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 				// up till the commit place
 				rf.commmitIndex = rf.matchIndex[server]
 				//DPrintf("Leader %d commitIndex=%d/%d in term %d.\n", rf.me, rf.commmitIndex, rf.GetLastIndex(), rf.currentTerm)
-				//rf.commit()
+				rf.cond.Broadcast()
 			}
 		}
 
@@ -430,7 +434,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 				return b
 			}(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
-			//rf.commit()
+			rf.cond.Broadcast()
 		}
 	}
 	return
@@ -503,8 +507,10 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.lastIncludedIndex = lii
 		rf.lastIncludedTerm = lit
 		rf.snapshot = rf.persister.ReadSnapshot()
-		rf.commmitIndex = rf.lastIncludedIndex
-		rf.lastApplied = rf.lastIncludedIndex
+		if rf.lastApplied < rf.lastIncludedIndex {
+			rf.commmitIndex = rf.lastIncludedIndex
+			rf.lastApplied = rf.lastIncludedIndex
+		}
 	}
 }
 
@@ -803,6 +809,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.RestartTimer()
 	rf.state = FOLLOWER
 	rf.applyCh = applyCh
+	rf.cond = sync.NewCond(&rf.mu)
 	// Volatile on leader, Reinitialized after election
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
@@ -825,10 +832,12 @@ func (rf *Raft) ElectionTimeout() {
 		// if electionTimeout
 		//select {
 		//case <-rf.timer.C:
+		rf.cond.Broadcast()
 		st := time.Now()
 		// return immediately if negative time
 		time.Sleep(time.Duration(rf.electionTimeout) * time.Millisecond)
 		rf.mu.Lock()
+		rf.cond.Broadcast()
 		if rf.startTime.Before(st) {
 			switch rf.state {
 			case FOLLOWER:
@@ -911,12 +920,13 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		// persist later from the snapshot
 		//rf.persist()
 	}
-	DPrintf("Server %d installing snapshot in term %d\n", rf.me, rf.currentTerm)
 	reply.Term = rf.currentTerm
 
 	if rf.lastIncludedIndex >= args.LastIncludedIndex {
+		DPrintf("Server %d reject InstallSnapshot for snapshot's index outdated\n", rf.me)
 		return
 	}
+	DPrintf("Server %d installing snapshot in term %d\n", rf.me, rf.currentTerm)
 	// possible: index > rf.commmitIndex, update itself
 	rf.snapshot = args.Data
 	// trim the log, with a newly allocated one
