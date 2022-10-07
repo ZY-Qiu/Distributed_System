@@ -1,0 +1,3 @@
+The read/write transaction after finishes, will set its timestamp to TT.now().latest, then wait for TT.now().earliest to surpass the timestamp, then the transaction will commit. Such a process will take a will, called commit wait.
+The read only transaction, will also set its timestamp to TT.now().latest, and read the version of the data that has the highest timestamp, however, each replica tracks a value called safe time, only timestamp before the safe time is up to date, if a read transaction comes after a safe time, it will have to wait untill the replica can update its data and safe time after a write.
+If the error bound is too large, the storage replica may wait too long to ensure external consistency, thus lagging the read too much.

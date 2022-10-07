@@ -1,0 +1,2 @@
+Two phase commit acquire the locks needed in one transaction incremetally, while simple locking needs to know in advance all the locks of a transaction and acquire them all at the beginning of that transaction.
+Thus, two phase locking acquires the lock in one transaction A only after it really needs to read or write the related data, allowing other concurrent transaction B to acquire the lock, and hopefully end the transaction and release that lock before transaction A needs to acquire it.

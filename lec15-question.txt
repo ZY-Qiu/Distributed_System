@@ -1,0 +1,1 @@
+Because MapReduce/Hadoop uses lots of storage IO operations, but Spark stores everything in the memory, it will help a lot if an application that reuses the data quite often is using Spark.

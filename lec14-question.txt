@@ -1,0 +1,1 @@
+During the lock phase, the second transaction will see the object with lock held, then it should receive a No from the primary. Then the transaction cooradinator will send abort() to the servers, and clean the servers' log about this transaction.

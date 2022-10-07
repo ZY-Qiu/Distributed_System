@@ -51,6 +51,7 @@ type Op struct {
 	MoveShard   int
 	MoveGid     int
 	QueryNum    int
+	QueryConfig Config
 }
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
@@ -214,11 +215,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 			return
 		} else {
 			reply.Err = OK
-			if newOp.QueryNum == -1 || newOp.QueryNum >= len(sm.configs) {
-				reply.Config = sm.configs[len(sm.configs)-1]
-			} else {
-				reply.Config = sm.configs[newOp.QueryNum]
-			}
+			reply.Config = newOp.QueryConfig
 			return
 		}
 	case <-timer.C:
@@ -423,7 +420,12 @@ func (sm *ShardMaster) Listen() {
 					} else if op.OpType == MOVE {
 						sm.configs = append(sm.configs, *sm.MoveHandler(op.MoveShard, op.MoveGid))
 					} else if op.OpType == QUERY {
-						// actually a read, do nothing
+						// actually a read
+						if op.QueryNum == -1 || op.QueryNum >= len(sm.configs) {
+							op.QueryConfig = sm.configs[len(sm.configs)-1]
+						} else {
+							op.QueryConfig = sm.configs[op.QueryNum]
+						}
 					}
 					sm.seqMap[op.ClientId] = op.SequenceId
 					// may need to snapshot if log size too large

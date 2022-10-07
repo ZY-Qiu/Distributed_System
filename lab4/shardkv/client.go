@@ -43,6 +43,8 @@ type Clerk struct {
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	seqId    int
+	cliendId int64
 }
 
 //
@@ -55,10 +57,13 @@ type Clerk struct {
 // send RPCs.
 //
 func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
+	DPrintf("Client calling MakeClerk()\n")
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.seqId = 0
+	ck.cliendId = nrand()
 	return ck
 }
 
@@ -71,7 +76,10 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 	args.Key = key
-
+	ck.seqId++
+	args.SeqId = ck.seqId
+	args.ClientId = ck.cliendId
+	DPrintf("Client calling Get()\n")
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -107,7 +115,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
+	ck.seqId++
+	args.SeqId = ck.seqId
+	args.ClientId = ck.cliendId
 
+	DPrintf("Client calling PutAppend()\n")
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -120,6 +132,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					DPrintf("Client's' PutAppend() receives ErrWrrongGroup\n")
 					break
 				}
 				// ... not ok, or ErrWrongLeader
